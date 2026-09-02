@@ -1,0 +1,20 @@
+# Secrets — NEVER commit (contains Azure client secret + Cryptware API key)
+fno_config.py
+.env
+
+# Local data / runtime
+*.db
+*.db-wal
+*.db-shm
+logs/
+invoices/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

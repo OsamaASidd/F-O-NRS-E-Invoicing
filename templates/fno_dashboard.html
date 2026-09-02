@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karishma NRS E-Invoicing (F&amp;O)</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--line:#334155;--txt:#e2e8f0;--mut:#94a3b8;
+        --accent:#6366f1;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--chip:#0b1220;}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt)}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0}
+  header .env{font-size:12px;color:var(--mut)}
+  .badge{background:var(--chip);border:1px solid var(--line);color:var(--mut);padding:2px 8px;border-radius:999px;font-size:11px}
+  .wrap{padding:20px 24px;max-width:1200px;margin:0 auto}
+  .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:110px}
+  .stat b{font-size:22px;display:block}
+  .stat span{color:var(--mut);font-size:12px}
+  .bar{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+  button{background:var(--accent);color:#fff;border:0;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  button:disabled{opacity:.5;cursor:default}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
+  th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:0}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+  .pending{background:#3b3410;color:#fbbf24}
+  .posted{background:#0d2a17;color:#4ade80}
+  .failed{background:#3a1414;color:#f87171}
+  .type-cn{color:#f0abfc}
+  .actions{display:flex;gap:6px}
+  .mut{color:var(--mut)}
+  a{color:#818cf8}
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:10}
+  .modal.show{display:flex}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:12px;max-width:760px;width:100%;max-height:85vh;overflow:auto}
+  .box h3{margin:0;padding:16px 20px;border-bottom:1px solid var(--line);font-size:15px;display:flex;justify-content:space-between;align-items:center}
+  .box .body{padding:16px 20px}
+  pre{background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto;font-size:12px;margin:0;white-space:pre-wrap;word-break:break-word}
+  .warns{margin:0 0 12px;padding:10px 12px;background:#3b3410;border:1px solid #b4890f;border-radius:8px;color:#fcd34d;font-size:12px}
+  .close{cursor:pointer;color:var(--mut);background:none;border:0;font-size:18px}
+  .toast{position:fixed;bottom:20px;right:20px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:8px;max-width:420px;display:none;z-index:20}
+  .toast.show{display:block}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Karishma CDK Limited — NRS E-Invoicing</h1>
+    <div class="env">Dynamics 365 Finance &amp; Operations · Legal entity <b>KL</b> · Sandbox</div>
+  </div>
+  <div><span class="badge" id="conn">connecting…</span></div>
+</header>
+
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+  <div class="bar">
+    <button id="refresh" onclick="load()">↻ Refresh from F&amp;O</button>
+    <span class="mut" id="lastload"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Invoice</th><th>Voucher</th><th>Type</th><th>Date</th><th>Customer</th>
+      <th style="text-align:right">Total</th><th>NRS Status</th><th>IRN</th><th></th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="9" class="mut">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="modal" id="modal"><div class="box">
+  <h3><span id="mtitle">Payload</span><button class="close" onclick="hide()">✕</button></h3>
+  <div class="body"><div id="mwarn"></div><pre id="mbody"></pre></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const money=(n,c)=> (n==null?'-':Number(n).toLocaleString('en-NG',{maximumFractionDigits:2})+' '+(c||''));
+function toast(msg,ms=4000){const t=document.getElementById('toast');t.innerHTML=msg;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),ms);}
+function hide(){document.getElementById('modal').classList.remove('show');}
+
+async function load(){
+  const btn=document.getElementById('refresh');btn.disabled=true;btn.innerHTML='<span class="spin"></span> Loading…';
+  document.getElementById('conn').textContent='reading F&O…';
+  try{
+    const r=await fetch('/api/invoices');const d=await r.json();
+    if(!d.ok) throw new Error(d.error||'failed');
+    document.getElementById('conn').textContent='● connected';document.getElementById('conn').style.color='var(--ok)';
+    renderStats(d.stats);renderRows(d.invoices);
+    document.getElementById('lastload').textContent='Loaded '+d.invoices.length+' documents · '+new Date().toLocaleTimeString();
+  }catch(e){
+    document.getElementById('conn').textContent='● error';document.getElementById('conn').style.color='var(--err)';
+    document.getElementById('rows').innerHTML='<tr><td colspan="9" class="mut">Error: '+e.message+'</td></tr>';
+    toast('Failed to read F&O: '+e.message);
+  }finally{btn.disabled=false;btn.innerHTML='↻ Refresh from F&O';}
+}
+function renderStats(s){
+  document.getElementById('stats').innerHTML=[
+    ['Total',s.total],['Posted',s.posted],['Pending',s.pending],['Failed',s.failed]
+  ].map(([k,v])=>`<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+}
+function renderRows(rows){
+  if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="9" class="mut">No invoices in KL.</td></tr>';return;}
+  document.getElementById('rows').innerHTML=rows.map(r=>{
+    const irn=r.irn?`<a href="#" onclick="return false" title="${r.irn}">${r.irn.slice(0,22)}…</a>`:'<span class="mut">—</span>';
+    const qr=r.qr?` · <a href="${r.qr}" target="_blank">QR</a>`:'';
+    const post=r.status==='posted'
+      ? `<button class="ghost" onclick="preview('${r.voucher}')">View</button>`
+      : `<button class="ghost" onclick="preview('${r.voucher}')">Preview</button> <button onclick="post('${r.voucher}',this)">Post</button>`;
+    return `<tr>
+      <td><b>${r.invoice_num||''}</b></td>
+      <td class="mut">${r.voucher}</td>
+      <td class="${r.type==='Credit Note'?'type-cn':''}">${r.type}</td>
+      <td>${r.date||''}</td>
+      <td>${r.customer||''}</td>
+      <td class="num">${money(r.total,r.currency)}</td>
+      <td><span class="pill ${r.status}">${r.status}</span></td>
+      <td>${irn}${qr}</td>
+      <td class="actions">${post}</td>
+    </tr>`;}).join('');
+}
+async function preview(v){
+  document.getElementById('mtitle').textContent='Payload · '+v;
+  document.getElementById('mwarn').innerHTML='';
+  document.getElementById('mbody').textContent='Building payload from F&O…';
+  document.getElementById('modal').classList.add('show');
+  const r=await fetch('/api/preview/'+encodeURIComponent(v));const d=await r.json();
+  if(!d.ok){document.getElementById('mbody').textContent='Error: '+(d.error||'failed');return;}
+  if(d.warnings&&d.warnings.length) document.getElementById('mwarn').innerHTML='<div class="warns"><b>Warnings:</b><br>'+d.warnings.join('<br>')+'</div>';
+  document.getElementById('mbody').textContent=JSON.stringify(d.payload,null,2);
+}
+async function post(v,btn){
+  btn.disabled=true;btn.innerHTML='<span class="spin"></span>';
+  try{
+    const r=await fetch('/api/post/'+encodeURIComponent(v),{method:'POST'});const d=await r.json();
+    if(d.ok){toast('✓ Posted <b>'+v+'</b><br>IRN: '+d.irn+(d.warnings&&d.warnings.length?'<br><span style="color:#fcd34d">'+d.warnings.join('; ')+'</span>':''),7000);load();}
+    else{toast('✗ Post failed: '+(d.error||'unknown'),8000);btn.disabled=false;btn.innerHTML='Post';}
+  }catch(e){toast('✗ '+e.message);btn.disabled=false;btn.innerHTML='Post';}
+}
+load();
+</script>
+</body>
+</html>
