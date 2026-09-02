@@ -1,8 +1,10 @@
 # app_fno.py — Karishma D365 F&O -> NRS e-invoicing dashboard
 import os
 import logging
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_file, abort
 import fno_service as svc
+import pdf_gen_fno
+from fno_config import PDF_DIR
 
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -53,6 +55,24 @@ def api_post(voucher):
     except Exception as e:
         logger.exception("post failed")
         return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/download/<path:voucher>")
+def download_pdf(voucher):
+    try:
+        detail = svc.invoice_detail(voucher)
+        if not detail:
+            abort(404, "Invoice not found")
+        if not detail.get("irn"):
+            abort(400, "Invoice not yet posted to NRS (no IRN/QR) - post it first")
+        os.makedirs(PDF_DIR, exist_ok=True)
+        safe = voucher.replace("/", "_").replace(" ", "_")
+        path = os.path.join(PDF_DIR, f"{safe}.pdf")
+        pdf_gen_fno.generate(detail, path)
+        return send_file(path, as_attachment=True, download_name=f"{detail['invoice_num']}.pdf")
+    except Exception as e:
+        logger.exception("pdf generation failed")
+        abort(500, str(e))
 
 
 if __name__ == "__main__":

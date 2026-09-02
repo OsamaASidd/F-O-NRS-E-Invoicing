@@ -63,29 +63,35 @@ pip install -r requirements.txt
 
 ## 3. Configure
 
+Secrets and environment settings are read from a **`.env`** file (loaded via `python-dotenv`).
 Copy the template and fill in your real values:
 
 ```bash
 # Windows
-copy fno_config.example.py fno_config.py
+copy .env.example .env
 # macOS/Linux
-cp fno_config.example.py fno_config.py
+cp .env.example .env
 ```
 
-Edit `fno_config.py`:
+Edit `.env`:
 
-| Setting | What it is |
+| Variable | What it is |
 |---|---|
 | `FNO_TENANT_ID` | Azure AD Directory (Tenant) ID |
 | `FNO_CLIENT_ID` | Azure AD Application (Client) ID |
 | `FNO_CLIENT_SECRET` | Client secret **value** |
 | `FNO_BASE_URL` | F&O environment URL (sandbox or production) |
 | `DATA_AREA_ID` | Legal entity / `dataAreaId` (e.g. `KL`) |
-| `API_BASE_URL` | Cryptware NRS API base URL (preprod vs prod) |
-| `KARISHMA["api_key"]` | Cryptware `x-api-key` for the supplier |
+| `CRYPTWARE_API_BASE_URL` | Cryptware NRS API base URL (preprod vs prod) |
+| `CRYPTWARE_API_KEY` | Cryptware `x-api-key` for the supplier |
 
-> ⚠️ **`fno_config.py` holds live secrets and is gitignored — never commit it.** Manage the secret
-> via a vault or environment injection in production.
+`fno_config.py` reads these from the environment and contains **no secrets** (safe to commit).
+Non-secret supplier/footer details (name, RC, bank) have defaults in `fno_config.py` and can also
+be overridden via `.env` (`SUPPLIER_*`). Drop the invoice logo at `static/Karishma logo.png` (or set
+`SUPPLIER_LOGO_PATH`).
+
+> ⚠️ **`.env` holds live secrets and is gitignored — never commit it.** In production, inject the
+> variables via your host's secret manager instead of a file.
 
 ---
 
@@ -134,7 +140,9 @@ fno_service.py              read F&O + map fields + build payload + submit
 fno_client.py               F&O OData client (token, reads, optional writeback)
 api_client.py               Cryptware NRS API client
 db.py                       local SQLite (submission status / IRN cache)
-fno_config.example.py       config template  → copy to fno_config.py
+pdf_gen_fno.py              invoice PDF (D365 layout + NRS IRN/QR)
+fno_config.py               config (reads secrets from .env; no secrets in file)
+.env.example                environment template  → copy to .env
 diag_fno.py                 read-only connectivity probe
 fno_post_*.py               standalone test scripts (single invoice / credit note)
 templates/fno_dashboard.html  dashboard UI

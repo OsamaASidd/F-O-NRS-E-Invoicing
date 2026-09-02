@@ -1,5 +1,4 @@
-# Secrets — NEVER commit (contains Azure client secret + Cryptware API key)
-fno_config.py
+# Secrets — NEVER commit. Real credentials live in .env (see .env.example).
 .env
 
 # Local data / runtime

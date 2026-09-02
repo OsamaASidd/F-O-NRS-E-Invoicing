@@ -111,7 +111,7 @@ function renderRows(rows){
     const irn=r.irn?`<a href="#" onclick="return false" title="${r.irn}">${r.irn.slice(0,22)}…</a>`:'<span class="mut">—</span>';
     const qr=r.qr?` · <a href="${r.qr}" target="_blank">QR</a>`:'';
     const post=r.status==='posted'
-      ? `<button class="ghost" onclick="preview('${r.voucher}')">View</button>`
+      ? `<button class="ghost" onclick="preview('${r.voucher}')">View</button> <a href="/download/${encodeURIComponent(r.voucher)}" target="_blank"><button>⬇ PDF</button></a>`
       : `<button class="ghost" onclick="preview('${r.voucher}')">Preview</button> <button onclick="post('${r.voucher}',this)">Post</button>`;
     return `<tr>
       <td><b>${r.invoice_num||''}</b></td>

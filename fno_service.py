@@ -93,10 +93,15 @@ def _prod_cats(pn):
     return _pc_cache[pn]
 
 
-def _cust_tin(acct):
+def _cust_regs(acct):
+    """Return {'TIN': ..., 'RC': ...} registration numbers for a customer."""
     regs = _get("TaxServiceTaxRegistrationNumberCustomers",
                 {"cross-company": "true", "$filter": f"CustAccountNum eq '{acct}'"})
-    return next((r["RegistrationNumber"] for r in regs if r.get("TaxRegstrationType") == "TIN"), None)
+    return {r.get("TaxRegstrationType"): r.get("RegistrationNumber") for r in regs}
+
+
+def _cust_tin(acct):
+    return _cust_regs(acct).get("TIN")
 
 
 # ---------------------------------------------------------------- reads
@@ -231,3 +236,93 @@ def post_invoice(voucher):
                 ON CONFLICT(voucher) DO UPDATE SET status='failed',api_response=excluded.api_response,posted_at=excluded.posted_at""",
              base + (json.dumps(res.get("data"))[:5000], now))
     return {"ok": False, "error": err, "warnings": warnings}
+
+
+def invoice_detail(voucher):
+    """
+    Rich per-invoice data for the printed PDF (mirrors the D365 F&O invoice layout).
+    Includes header, references, line items with computed amounts + HS/ISIC + category,
+    customer + TIN/RC, tax summary, totals, and the stored NRS IRN/QR.
+    """
+    hdr = _header(voucher)
+    if not hdr:
+        return None
+    invno = hdr["InvoiceNumber"]
+    acct = hdr["InvoiceCustomerAccountNumber"]
+    iscn = voucher.startswith("SCN")
+    lines = _get(LINE_ENTITY, {"cross-company": "true",
+                 "$filter": f"dataAreaId eq '{DATA_AREA_ID}' and InvoiceNumber eq '{invno}' "
+                            f"and LedgerVoucher eq '{voucher}'"})
+    cust = _get("CustomersV3", {"$top": 1, "cross-company": "true",
+                "$filter": f"dataAreaId eq '{DATA_AREA_ID}' and CustomerAccount eq '{acct}'"})
+    cust = cust[0] if cust else {}
+    regs = _cust_regs(acct)
+
+    det_lines, sub_total, tax_total = [], 0.0, 0.0
+    for ln in lines:
+        pn = ln.get("ProductNumber")
+        qty = abs(float(ln.get("InvoicedQuantity", 1) or 1))
+        price = abs(float(ln.get("SalesPrice", 0) or 0))
+        disc = abs(float(ln.get("LineTotalDiscountAmount", 0) or 0))
+        amount = abs(float(ln.get("LineAmount", 0) or 0)) or (qty * price - disc)
+        vat = abs(float(ln.get("LineTotalTaxAmount", 0) or 0))
+        rate = round(vat / amount * 100, 1) if amount else 0.0
+        hsn6, cat = _prod_cats(pn)
+        hsn6 = re.sub(r"\D", "", hsn6 or "")[:6] if hsn6 else ""
+        # _prod_cats returns formatted 0000.00; recover 6-digit for HS/ISIC display
+        raw = _get("ProductCategoryAssignments", {"cross-company": "true", "$filter": f"ProductNumber eq '{pn}'"}) \
+            or _get("ProductCategoryAssignments", {"cross-company": "true", "$filter": f"ProductNumber eq '{pn.split('-')[0]}'"})
+        commodity = next((r["ProductCategoryName"] for r in raw
+                          if "Commodity" in (r.get("ProductCategoryHierarchyName") or "")), "")
+        hs_isic = re.sub(r"\D", "", commodity)[:6] if commodity else hsn6
+        sub_total += amount
+        tax_total += vat
+        det_lines.append({
+            "description": ln.get("ProductDescription") or "Item",
+            "item": pn, "category": cat or "",
+            "hs_isic": hs_isic, "tax_rate": rate,
+            "quantity": qty, "unit": ln.get("SalesUnitSymbol") or "",
+            "unit_price": price, "discount": disc,
+            "amount": amount, "vat": vat, "gross": amount + vat,
+        })
+
+    local = db_read_one("SELECT irn, qr_code, status FROM fno_invoices WHERE voucher=?", (voucher,))
+    total = float(hdr.get("TotalInvoiceAmount") or (sub_total + tax_total))
+    addr_parts = [str(hdr.get("InvoiceAddressStreetNumber", "")).strip() + " " +
+                  str(hdr.get("InvoiceAddressStreet", "")).strip(),
+                  hdr.get("InvoiceAddressCity", ""), hdr.get("InvoiceAddressZipCode", "")]
+    return {
+        "voucher": voucher, "invoice_num": invno,
+        "invoice_date": hdr.get("InvoiceDate", "")[:10],
+        "is_credit_note": iscn,
+        "customer": {
+            "name": cust.get("OrganizationName") or f"Customer {acct}",
+            "account": acct,
+            "enterprise_number": regs.get("RC", ""),
+            "tin": regs.get("TIN", ""),
+            "address_lines": [p.strip() for p in [
+                (str(hdr.get("InvoiceAddressStreetNumber", "")).strip() + " " +
+                 str(hdr.get("InvoiceAddressStreet", "")).strip()).strip(),
+                hdr.get("InvoiceAddressCity", ""),
+                (hdr.get("InvoiceAddressZipCode", "") or "") + ", " +
+                (hdr.get("InvoiceAddressCountryRegionISOCode", "") or ""),
+            ] if p and p != ","],
+            "email": cust.get("PrimaryContactEmail", ""),
+            "phone": cust.get("PrimaryContactPhone", ""),
+        },
+        "refs": {
+            "sales_order": hdr.get("SalesOrderNumber", ""),
+            "requisition": hdr.get("CustomersRequisitionNumber", "") or hdr.get("PurchaseOrderNumber", ""),
+            "your_reference": hdr.get("CustomersOrderReference", ""),
+            "delivery_terms": hdr.get("DeliveryTermsCode", ""),
+            "invoice_account": acct,
+            "payment": hdr.get("PaymentTermsName", ""),
+            "due_date": (hdr.get("DueDate", "") or hdr.get("InvoiceDate", ""))[:10],
+        },
+        "lines": det_lines,
+        "currency": hdr.get("CurrencyCode", "NGN"),
+        "sub_total": sub_total, "tax_total": tax_total, "total": total,
+        "irn": (local or {}).get("irn"),
+        "qr_url": (local or {}).get("qr_code"),
+        "status": (local or {}).get("status", "pending"),
+    }
