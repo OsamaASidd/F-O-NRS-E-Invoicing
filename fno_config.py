@@ -52,6 +52,22 @@ SUPPLIER_PROFILE = {
     "logo_path": _env("SUPPLIER_LOGO_PATH", "static/Karishma logo.png"),
 }
 
+# --- Bank accounts shown on the printed invoice (Payment instructions table) ---
+BANK_ACCOUNTS = [
+    {"bank_name": "Standard Chartered Bank", "account_number": "0002424253",
+     "account_name": "Karishma CDK Limited"},
+    {"bank_name": "First City Monument Bank", "account_number": "7753505018",
+     "account_name": "Karishma CDK Limited"},
+]
+
+# --- VAT details block on the printed invoice ---
+VAT_CODE = _env("SUPPLIER_VAT_CODE", "NG-STD")
+
+# --- Printed invoice footer notice ---
+INVOICE_NOTICE = _env("INVOICE_NOTICE",
+    "Please inspect all goods at collection. Goods accepted in good condition are not eligible for refund or exchange.")
+INVOICE_THANKS = _env("INVOICE_THANKS", "Thank you for your business!")
+
 # --- App / DB ---
 DB_PATH = _env("DB_PATH", "einvoice_fno.db")
 PDF_DIR = "invoices"

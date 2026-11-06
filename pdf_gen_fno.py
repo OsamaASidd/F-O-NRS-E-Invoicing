@@ -2,7 +2,8 @@
 pdf_gen_fno.py
 ==============
 Render a Karishma invoice PDF that mirrors the D365 F&O invoice print layout,
-with the NRS IRN and QR code added. Uses reportlab only (no extra deps).
+with the NRS IRN and QR code added at the bottom of the page.
+Uses reportlab only (no extra deps).
 """
 
 import io
@@ -11,13 +12,12 @@ import logging
 import requests
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
-from fno_config import SUPPLIER_PROFILE
+from fno_config import SUPPLIER_PROFILE, BANK_ACCOUNTS, VAT_CODE, INVOICE_NOTICE, INVOICE_THANKS
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def _wrap(text, maxchars):
 
 def _fmt_date(iso):
     try:
-        return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d %B %Y")
+        return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
     except Exception:
         return iso or ""
 
@@ -133,74 +133,55 @@ def generate(detail, out_path):
     cur = detail["currency"]
 
     # ---- header band ----
-    _logo(c, L, H - 32)   # logo top near page top; sized to 26pt tall
-    # QR + IRN top-right
-    if detail.get("irn"):
-        _qr_flowable(c, detail["irn"], detail.get("qr_url"), R - 78, H - 92, 78)
-        c.setFont("Helvetica", 6)
-        c.setFillColorRGB(*GREY)
-        c.drawRightString(R, H - 100, "IRN")
-        c.setFont("Helvetica-Bold", 6.5)
-        c.setFillColorRGB(*DARK)
-        c.drawRightString(R, H - 109, detail["irn"])
-
+    _logo(c, L, H - 32)
     title = "Credit Note" if detail["is_credit_note"] else "Invoice"
     c.setFillColorRGB(*DARK)
-    c.setFont("Helvetica-Bold", 26)
-    c.drawString(L, H - 105, title)
-    c.setFont("Helvetica", 8.5)
-    c.drawString(L, H - 120, detail["invoice_num"])
-    c.drawString(L + 90, H - 120, _fmt_date(detail["invoice_date"]))
+    c.setFont("Helvetica", 24)
+    c.drawString(L, H - 100, title)
 
     # ---- two info columns ----
-    ly = H - 150
+    ly = H - 140
     c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
     c.drawString(L, ly, "Invoice for")
-    c.drawString(320, ly, "References and Terms")
+    c.drawString(320, ly, "Invoice details")
     ly -= 14
     c.setFont("Helvetica-Bold", 9); c.setFillColorRGB(*DARK)
     c.drawString(L, ly, cust["name"])
 
+    # left column: address directly under the name, then registration + contact
+    yy = ly - 13
+    c.setFont("Helvetica", 8); c.setFillColorRGB(*DARK)
+    for al in cust.get("address_lines", []):
+        for line in _wrap(al, 62):
+            c.drawString(L, yy, line); yy -= 11
+    yy -= 2
     left = [
-        ("Contact person", ""),
         ("Enterprise number", cust.get("enterprise_number")),
         ("Tax registration number", cust.get("tin")),
+        ("Contact", cust.get("contact")),
     ]
-    yy = ly - 14
     for lbl, val in left:
-        _field(c, L, yy, lbl, val, L + 120); yy -= 12
-    # address (wrapped so it never runs into the right column)
-    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY); c.drawString(L, yy, "Address")
-    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
-    addr_wrapped = []
-    for al in cust.get("address_lines", []):
-        addr_wrapped += _wrap(al, 30)
-    for al in addr_wrapped:
-        c.drawString(L + 120, yy, al); yy -= 11
-    yy -= 2
-    _field(c, L, yy, "Email Address", cust.get("email"), L + 120); yy -= 12
-    _field(c, L, yy, "Phone Number", cust.get("phone"), L + 120)
+        _field(c, L, yy, lbl, val, L + 130); yy -= 12
 
-    # right column
-    ry = ly - 14
+    # right column: invoice details
+    ry = ly - 13
     right = [
+        ("Invoice number", detail["invoice_num"]),
+        ("Invoice date", _fmt_date(detail["invoice_date"])),
         ("Sales order", refs.get("sales_order")),
+        ("Delivery terms", refs.get("delivery_terms")),
+        ("Payment terms", refs.get("payment")),
+        ("Invoice account", refs.get("invoice_account")),
         ("Requisition", refs.get("requisition")),
         ("Your reference", refs.get("your_reference")),
         ("Our reference", ""),
-        ("Delivery terms", refs.get("delivery_terms")),
-        ("Invoice account", refs.get("invoice_account")),
-        ("Payment", refs.get("payment")),
         ("Payment reference", ""),
     ]
     for lbl, val in right:
-        _field(c, 320, ry, lbl, val, 430); ry -= 12
-    ry -= 4
-    _field(c, 320, ry, "Total amount due", _money(detail["total"]), 0, val_bold=True, val_right=R); ry -= 13
-    _field(c, 320, ry, "Due date", _fmt_date(refs.get("due_date")), 430)
+        _field(c, 320, ry, lbl, val, 0, val_right=R); ry -= 12
 
     # ---- line items table ----
-    ty = min(yy, ry) - 26
+    ty = min(yy, ry) - 24
     cols = {"desc": L, "qty": 256, "unit": 260, "price": 340,
             "disc": 388, "amt": 448, "vat": 500, "gross": R}
     c.setStrokeColorRGB(*LINE); c.setLineWidth(0.6)
@@ -234,55 +215,115 @@ def generate(detail, out_path):
             c.setFillColorRGB(*DARK); c.setFont("Helvetica", 7)
             c.drawString(cols["desc"], ty - 9, dlines[1])
             sub_y = ty - 9
-        # sub row: item (base) / category / HS-ISIC / tax rate
+        # sub row 1: item number / HS-ISIC
         c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
-        c.drawString(cols["desc"], sub_y - 9, f"Item  {str(ln['item']).split('-')[0]}")
-        c.drawString(cols["desc"] + 90, sub_y - 9, (f"Category  {ln['category']}")[:44])
-        c.drawRightString(cols["amt"], sub_y - 9, f"HS/ISIC  {ln['hs_isic']}")
-        c.drawRightString(cols["gross"], sub_y - 9, f"Tax Rate  VAT {ln['tax_rate']}%")
-        ty -= (24 if len(dlines) == 1 else 33)
-        if ty < 210:  # page break guard
+        c.drawString(cols["desc"], sub_y - 9, f"Item number  {str(ln['item']).split('-')[0]}")
+        c.drawString(cols["price"], sub_y - 9, f"HS/ISIC  {ln['hs_isic']}")
+        # sub row 2: category / tax rate / currency
+        c.drawString(cols["desc"], sub_y - 18, (f"Category  {ln['category']}")[:50])
+        c.drawRightString(cols["vat"], sub_y - 18, f"Tax rate  VAT {ln['tax_rate']}%")
+        c.drawRightString(cols["gross"], sub_y - 18, f"Currency  {cur}")
+        ty = sub_y - 18 - 10
+        if ty < 240:  # page break guard (leaves room for totals/VAT/footer below)
             c.showPage(); ty = H - 60
 
     c.setStrokeColorRGB(*LINE); c.line(L, ty + 6, R, ty + 6)
-    ty -= 6
+    ty -= 10
 
-    # ---- totals block (right aligned) ----
+    # ---- payment instructions (left) + totals (right) ----
+    py = ty
+    c.setFont("Helvetica-Bold", 8.5); c.setFillColorRGB(*DARK)
+    c.drawString(L, py, "Payment instructions"); py -= 13
+    c.setFont("Helvetica", 7); c.setFillColorRGB(*GREY)
+    c.drawString(L, py, "Bank name")
+    c.drawString(L + 130, py, "Account number")
+    c.drawString(L + 220, py, "Account name")
+    py -= 12
+    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 7.5)
+    for b in BANK_ACCOUNTS:
+        c.drawString(L, py, b["bank_name"])
+        c.drawString(L + 130, py, b["account_number"])
+        c.drawString(L + 220, py, b["account_name"])
+        py -= 12
+
+    ty2 = ty
     tot = [
-        ("Sales subtotal amount", _money(detail["sub_total"])),
-        ("Total discount", "-"),
+        ("Subtotal", _money(detail["sub_total"])),
         ("Total charges", "-"),
         ("Net amount", _money(detail["sub_total"])),
-        ("Sales tax", _money(detail["tax_total"])),
-        ("Round-off", "-"),
+        ("VAT amount", _money(detail["tax_total"])),
+        ("Rounding", "-"),
     ]
-    ty2 = ty
     for lbl, val in tot:
         c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
         c.drawRightString(R - 90, ty2, lbl)
         c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
         c.drawRightString(R, ty2, val); ty2 -= 13
-    ty2 -= 2
+    ty2 -= 1
     c.setFont("Helvetica-Bold", 9); c.setFillColorRGB(*DARK)
     c.drawRightString(R - 90, ty2, "Total")
-    c.drawRightString(R, ty2, f"{_money(detail['total'])}  {cur}")
+    c.drawRightString(R, ty2, _money(detail["total"])); ty2 -= 13
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
+    c.drawRightString(R - 90, ty2, "Currency")
+    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
+    c.drawRightString(R, ty2, cur); ty2 -= 13
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
+    c.drawRightString(R - 90, ty2, "Due date")
+    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
+    c.drawRightString(R, ty2, _fmt_date(refs.get("due_date")))
 
-    # ---- payment instructions (left) ----
-    py = ty - 6
+    by = min(py, ty2) - 16
+
+    # ---- VAT details ----
+    blended_rate = (round(detail["tax_total"] / detail["sub_total"] * 100, 1)
+                    if detail["sub_total"] else 0.0)
     c.setFont("Helvetica-Bold", 8.5); c.setFillColorRGB(*DARK)
-    c.drawString(L, py, "Payment instructions"); py -= 13
-    for lbl, val in [("Bank account number", sup["bank_account"]),
-                     ("Account name", sup["bank_account_name"]),
-                     ("Bank name", sup["bank_name"])]:
-        _field(c, L, py, lbl, val, L + 110); py -= 12
+    c.drawString(L, by, "VAT details"); by -= 13
+
+    vcols = [L, L + 110, L + 220, L + 350, R - 50]
+    c.setFont("Helvetica", 6.8); c.setFillColorRGB(*GREY)
+    for x, lbl in zip(vcols, ["Non-taxable", "Taxable", "Reverse charge balance",
+                              "Reverse charge amount", "Currency"]):
+        c.drawString(x, by, lbl)
+    by -= 11
+    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 7.5)
+    for x, val in zip(vcols, ["-", _money(detail["sub_total"]), "-", "-", cur]):
+        c.drawString(x, by, val)
+    by -= 15
+
+    c.setFont("Helvetica", 6.8); c.setFillColorRGB(*GREY)
+    for x, lbl in zip(vcols, ["Print code", "VAT code", "Amount origin", "VAT amount", "Currency"]):
+        c.drawString(x, by, lbl)
+    by -= 11
+    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 7.5)
+    for x, val in zip(vcols, [f"VAT {blended_rate}%", VAT_CODE, _money(detail["sub_total"]),
+                              _money(detail["tax_total"]), cur]):
+        c.drawString(x, by, val)
+    by -= 16
+
+    _field(c, L, by, "Invoice reference number", refs.get("invoice_reference_number"), L + 150)
+    by -= 20
+
+    # ---- notice / thank-you ----
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*DARK)
+    c.drawString(L, by, INVOICE_NOTICE); by -= 12
+    c.setFont("Helvetica-Bold", 7.5)
+    c.drawString(L, by, INVOICE_THANKS)
+
+    # ---- IRN + QR (bottom of page) ----
+    if detail.get("irn"):
+        c.setFont("Helvetica", 6.5); c.setFillColorRGB(*GREY)
+        c.drawString(L, 86, "IRN")
+        c.setFont("Helvetica-Bold", 7); c.setFillColorRGB(*DARK)
+        c.drawString(L, 74, detail["irn"])
+        _qr_flowable(c, detail["irn"], detail.get("qr_url"), R - 56, 36, 56)
 
     # ---- footer ----
-    c.setStrokeColorRGB(*LINE); c.line(L, 42, R, 42)
+    c.setStrokeColorRGB(*LINE); c.line(L, 30, R, 30)
     c.setFont("Helvetica", 7); c.setFillColorRGB(*GREY)
-    footer = (f"{sup['name']}   RC {sup['rc']}   TIN {sup['tin']}   "
-              f"{sup['email']}   {sup['address']}")
-    c.drawString(L, 32, footer)
-    c.drawRightString(R, 32, "1 of 1")
+    c.drawString(L, 20, f"{sup['name']}   RC {sup['rc']}   TIN {sup['tin']}")
+    c.drawRightString(R, 20, "1 of 1")
+    c.drawString(L, 10, f"{sup['address']}   {sup['email']}")
 
     c.showPage()
     c.save()
