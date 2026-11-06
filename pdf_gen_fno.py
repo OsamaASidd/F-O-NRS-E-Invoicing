@@ -1,7 +1,8 @@
 """
 pdf_gen_fno.py
 ==============
-Render a Karishma invoice PDF that mirrors the D365 F&O invoice print layout,
+Render a Karishma invoice PDF that mirrors the D365 F&O invoice print layout
+(per the client's SalesModTemplate Excel export: fonts, colors, borders),
 with the NRS IRN and QR code added at the bottom of the page.
 Uses reportlab only (no extra deps).
 """
@@ -23,10 +24,14 @@ logger = logging.getLogger(__name__)
 
 W, H = A4                      # 595 x 842 pt
 L, R = 40, W - 40              # left / right margins
-GREY = (0.55, 0.55, 0.55)
-DARK = (0.10, 0.10, 0.10)
-RED  = (0.78, 0.09, 0.11)
-LINE = (0.80, 0.80, 0.80)
+
+# Colors lifted from the client's Excel template (SalesModTemplate):
+GREY_LIGHT = (0x76 / 255, 0x76 / 255, 0x76 / 255)   # section headers, sub-row detail, VAT details
+LABEL_GREY = (0x59 / 255, 0x59 / 255, 0x59 / 255)   # field labels (Invoice details, totals, payment)
+DARK       = (0x1A / 255, 0x1A / 255, 0x1A / 255)   # values / body text
+BLACK      = (0x00, 0x00, 0x00)                     # bold supplier name in footer
+RED        = (0.78, 0.09, 0.11)                     # logo-fallback tile only
+LINE       = (0x76 / 255, 0x76 / 255, 0x76 / 255)   # thin rule color (matches template's grey borders)
 
 
 def _money(v):
@@ -89,12 +94,13 @@ def _png_size(path):
     return None
 
 
-def _logo(c, x, top_y, height=26.0, max_w=170.0):
-    """Draw the logo so its TOP edge sits at top_y, scaled to `height` keeping aspect."""
+def _logo(c, x, top_y, height=49.0, max_w=230.0):
+    """Draw the logo so its TOP edge sits at top_y, scaled to `height` keeping aspect
+    (~38-39% of the A4 page width, per client feedback)."""
     p = SUPPLIER_PROFILE.get("logo_path")
     if p and os.path.exists(p):
         sz = _png_size(p)
-        w = height * (sz[0] / sz[1]) if sz and sz[1] else 110.0
+        w = height * (sz[0] / sz[1]) if sz and sz[1] else 178.0
         w = min(w, max_w)
         try:
             c.drawImage(p, x, top_y - height, width=w, height=height, mask="auto")
@@ -105,23 +111,20 @@ def _logo(c, x, top_y, height=26.0, max_w=170.0):
     c.setFillColorRGB(*RED)
     c.rect(x, top_y - height, height, height, fill=1, stroke=0)
     c.setFillColorRGB(1, 1, 1)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(x + height / 2, top_y - height + 6, "K")
+    c.setFont("Helvetica-Bold", 20)
+    c.drawCentredString(x + height / 2, top_y - height + 10, "K")
     c.setFillColorRGB(*DARK)
-    c.setFont("Helvetica-Bold", 17)
-    c.drawString(x + height + 6, top_y - height + 6, "KARISHMA")
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(x + height + 8, top_y - height + 10, "KARISHMA")
 
 
-def _field(c, x, y, label, value, val_x, val_bold=False, val_right=None):
-    c.setFont("Helvetica", 7.5)
-    c.setFillColorRGB(*GREY)
+def _field(c, x, y, label, value, val_x, val_bold=False, label_color=LABEL_GREY, val_color=DARK, size=7.5):
+    c.setFont("Helvetica", size)
+    c.setFillColorRGB(*label_color)
     c.drawString(x, y, label)
-    c.setFillColorRGB(*DARK)
-    c.setFont("Helvetica-Bold" if val_bold else "Helvetica", 8)
-    if val_right is not None:
-        c.drawRightString(val_right, y, str(value or ""))
-    else:
-        c.drawString(val_x, y, str(value or ""))
+    c.setFillColorRGB(*val_color)
+    c.setFont("Helvetica-Bold" if val_bold else "Helvetica", size + 0.5)
+    c.drawString(val_x, y, str(value or ""))
 
 
 def generate(detail, out_path):
@@ -133,15 +136,15 @@ def generate(detail, out_path):
     cur = detail["currency"]
 
     # ---- header band ----
-    _logo(c, L, H - 32)
+    _logo(c, L, H - 24)
     title = "Credit Note" if detail["is_credit_note"] else "Invoice"
     c.setFillColorRGB(*DARK)
-    c.setFont("Helvetica", 24)
-    c.drawString(L, H - 100, title)
+    c.setFont("Helvetica", 22)
+    c.drawString(L, H - 108, title)
 
     # ---- two info columns ----
-    ly = H - 140
-    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
+    ly = H - 148
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY_LIGHT)
     c.drawString(L, ly, "Invoice for")
     c.drawString(320, ly, "Invoice details")
     ly -= 14
@@ -163,7 +166,7 @@ def generate(detail, out_path):
     for lbl, val in left:
         _field(c, L, yy, lbl, val, L + 130); yy -= 12
 
-    # right column: invoice details
+    # right column: invoice details — values LEFT-aligned under the labels
     ry = ly - 13
     right = [
         ("Invoice number", detail["invoice_num"]),
@@ -178,14 +181,13 @@ def generate(detail, out_path):
         ("Payment reference", ""),
     ]
     for lbl, val in right:
-        _field(c, 320, ry, lbl, val, 0, val_right=R); ry -= 12
+        _field(c, 320, ry, lbl, val, 420); ry -= 12
 
     # ---- line items table ----
     ty = min(yy, ry) - 24
     cols = {"desc": L, "qty": 256, "unit": 260, "price": 340,
             "disc": 388, "amt": 448, "vat": 500, "gross": R}
     c.setStrokeColorRGB(*LINE); c.setLineWidth(0.6)
-    c.line(L, ty + 12, R, ty + 12)
     c.setFont("Helvetica-Bold", 6.5); c.setFillColorRGB(*DARK)
     c.drawString(cols["desc"], ty, "Description")
     c.drawRightString(cols["qty"], ty, "Quantity")
@@ -195,7 +197,7 @@ def generate(detail, out_path):
     c.drawRightString(cols["amt"], ty, "Amount")
     c.drawRightString(cols["vat"], ty, "VAT amount")
     c.drawRightString(cols["gross"], ty, "Gross amount")
-    c.line(L, ty - 4, R, ty - 4)
+    c.line(L, ty - 4, R, ty - 4)      # only a bottom rule under the header (matches template)
     ty -= 18
 
     for ln in detail["lines"]:
@@ -216,7 +218,7 @@ def generate(detail, out_path):
             c.drawString(cols["desc"], ty - 9, dlines[1])
             sub_y = ty - 9
         # sub row 1: item number / HS-ISIC
-        c.setFillColorRGB(*GREY); c.setFont("Helvetica", 6)
+        c.setFillColorRGB(*GREY_LIGHT); c.setFont("Helvetica", 6)
         c.drawString(cols["desc"], sub_y - 9, f"Item number  {str(ln['item']).split('-')[0]}")
         c.drawString(cols["price"], sub_y - 9, f"HS/ISIC  {ln['hs_isic']}")
         # sub row 2: category / tax rate / currency
@@ -227,14 +229,13 @@ def generate(detail, out_path):
         if ty < 240:  # page break guard (leaves room for totals/VAT/footer below)
             c.showPage(); ty = H - 60
 
-    c.setStrokeColorRGB(*LINE); c.line(L, ty + 6, R, ty + 6)
-    ty -= 10
+    ty -= 4
 
     # ---- payment instructions (left) + totals (right) ----
     py = ty
-    c.setFont("Helvetica-Bold", 8.5); c.setFillColorRGB(*DARK)
+    c.setFont("Helvetica", 8.5); c.setFillColorRGB(*LABEL_GREY)
     c.drawString(L, py, "Payment instructions"); py -= 13
-    c.setFont("Helvetica", 7); c.setFillColorRGB(*GREY)
+    c.setFont("Helvetica", 7); c.setFillColorRGB(*LABEL_GREY)
     c.drawString(L, py, "Bank name")
     c.drawString(L + 130, py, "Account number")
     c.drawString(L + 220, py, "Account name")
@@ -255,19 +256,20 @@ def generate(detail, out_path):
         ("Rounding", "-"),
     ]
     for lbl, val in tot:
-        c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
+        c.setFont("Helvetica", 7.5); c.setFillColorRGB(*LABEL_GREY)
         c.drawRightString(R - 90, ty2, lbl)
         c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
         c.drawRightString(R, ty2, val); ty2 -= 13
-    ty2 -= 1
+    c.setStrokeColorRGB(*LINE); c.line(R - 110, ty2 + 7, R, ty2 + 7)   # rule between Rounding and Total
+    ty2 -= 3
     c.setFont("Helvetica-Bold", 9); c.setFillColorRGB(*DARK)
     c.drawRightString(R - 90, ty2, "Total")
     c.drawRightString(R, ty2, _money(detail["total"])); ty2 -= 13
-    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*LABEL_GREY)
     c.drawRightString(R - 90, ty2, "Currency")
     c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
     c.drawRightString(R, ty2, cur); ty2 -= 13
-    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY)
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*LABEL_GREY)
     c.drawRightString(R - 90, ty2, "Due date")
     c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
     c.drawRightString(R, ty2, _fmt_date(refs.get("due_date")))
@@ -277,31 +279,42 @@ def generate(detail, out_path):
     # ---- VAT details ----
     blended_rate = (round(detail["tax_total"] / detail["sub_total"] * 100, 1)
                     if detail["sub_total"] else 0.0)
-    c.setFont("Helvetica-Bold", 8.5); c.setFillColorRGB(*DARK)
+    c.setFont("Helvetica", 8.5); c.setFillColorRGB(*GREY_LIGHT)
     c.drawString(L, by, "VAT details"); by -= 13
 
     vcols = [L, L + 110, L + 220, L + 350, R - 50]
-    c.setFont("Helvetica", 6.8); c.setFillColorRGB(*GREY)
+    c.setFont("Helvetica", 6.8); c.setFillColorRGB(*GREY_LIGHT)
     for x, lbl in zip(vcols, ["Non-taxable", "Taxable", "Reverse charge balance",
                               "Reverse charge amount", "Currency"]):
         c.drawString(x, by, lbl)
-    by -= 11
-    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 7.5)
+    c.setStrokeColorRGB(*LINE); c.line(L, by - 3, R, by - 3)
+    by -= 14
+    c.setFillColorRGB(*GREY_LIGHT); c.setFont("Helvetica", 7.5)
     for x, val in zip(vcols, ["-", _money(detail["sub_total"]), "-", "-", cur]):
         c.drawString(x, by, val)
     by -= 15
 
-    c.setFont("Helvetica", 6.8); c.setFillColorRGB(*GREY)
+    c.setFont("Helvetica", 6.8); c.setFillColorRGB(*GREY_LIGHT)
     for x, lbl in zip(vcols, ["Print code", "VAT code", "Amount origin", "VAT amount", "Currency"]):
         c.drawString(x, by, lbl)
-    by -= 11
-    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 7.5)
+    c.setStrokeColorRGB(*LINE); c.line(L, by - 3, R, by - 3)
+    by -= 14
+    c.setFillColorRGB(*GREY_LIGHT); c.setFont("Helvetica", 7.5)
     for x, val in zip(vcols, [f"VAT {blended_rate}%", VAT_CODE, _money(detail["sub_total"]),
                               _money(detail["tax_total"]), cur]):
         c.drawString(x, by, val)
     by -= 16
 
-    _field(c, L, by, "Invoice reference number", refs.get("invoice_reference_number"), L + 150)
+    # Invoice reference number + IRN on the same row
+    c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY_LIGHT)
+    c.drawString(L, by, "Invoice reference number")
+    c.setFillColorRGB(*DARK); c.setFont("Helvetica", 8)
+    c.drawString(L + 150, by, str(refs.get("invoice_reference_number") or ""))
+    if detail.get("irn"):
+        c.setFont("Helvetica", 7.5); c.setFillColorRGB(*GREY_LIGHT)
+        c.drawString(L + 260, by, "IRN")
+        c.setFont("Helvetica-Bold", 6.5); c.setFillColorRGB(*DARK)
+        c.drawString(L + 282, by, detail["irn"])
     by -= 20
 
     # ---- notice / thank-you ----
@@ -310,20 +323,19 @@ def generate(detail, out_path):
     c.setFont("Helvetica-Bold", 7.5)
     c.drawString(L, by, INVOICE_THANKS)
 
-    # ---- IRN + QR (bottom of page) ----
+    # ---- QR (bottom-right; no footer rule — template has none) ----
     if detail.get("irn"):
-        c.setFont("Helvetica", 6.5); c.setFillColorRGB(*GREY)
-        c.drawString(L, 86, "IRN")
-        c.setFont("Helvetica-Bold", 7); c.setFillColorRGB(*DARK)
-        c.drawString(L, 74, detail["irn"])
-        _qr_flowable(c, detail["irn"], detail.get("qr_url"), R - 56, 36, 56)
+        _qr_flowable(c, detail["irn"], detail.get("qr_url"), R - 56, 55, 56)
 
-    # ---- footer ----
-    c.setStrokeColorRGB(*LINE); c.line(L, 30, R, 30)
-    c.setFont("Helvetica", 7); c.setFillColorRGB(*GREY)
-    c.drawString(L, 20, f"{sup['name']}   RC {sup['rc']}   TIN {sup['tin']}")
+    # ---- footer (no divider line; Aptos-matched colors/sizes/weights) ----
+    c.setFont("Helvetica-Bold", 8); c.setFillColorRGB(*BLACK)
+    c.drawString(L, 20, sup["name"])
+    name_w = c.stringWidth(sup["name"], "Helvetica-Bold", 8)
+    c.setFont("Helvetica", 8); c.setFillColorRGB(*DARK)
+    c.drawString(L + name_w + 14, 20, f"RC {sup['rc']}     TIN {sup['tin']}")
+    c.setFillColorRGB(*GREY_LIGHT)
     c.drawRightString(R, 20, "1 of 1")
-    c.drawString(L, 10, f"{sup['address']}   {sup['email']}")
+    c.drawString(L, 9, f"{sup['address']}     {sup['email']}")
 
     c.showPage()
     c.save()
